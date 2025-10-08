@@ -56,6 +56,18 @@ FrameTuple = Tuple[np.ndarray, int, int, float]
 VideoInput = Union[str, Path, bytes, "UploadedFile", "BytesIO"]
 
 
+def _as_landmark_list(entry: Any) -> List[Any]:
+    """Return a list of landmark-like objects from MediaPipe results."""
+    if entry is None:
+        return []
+    if hasattr(entry, "landmark"):
+        return list(getattr(entry, "landmark")) or []
+    try:
+        return list(entry)
+    except TypeError:
+        return []
+
+
 def _ensure_path(video_input: VideoInput, keep_temp: bool) -> Tuple[Path, Callable[[], None]]:
     """Persist the provided video input to disk and return its path and cleanup."""
     cleanup: Callable[[], None] = lambda: None
@@ -203,10 +215,13 @@ def extract(video_input: VideoInput, cfg: Dict[str, Any]) -> Dict[str, Any]:
             mp_image = Image(image_format=ImageFormat.SRGB, data=frame_rgb)
             result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
-            pose_world = result.pose_world_landmarks
-            pose_norm = result.pose_landmarks
+            pose_world = result.pose_world_landmarks or []
+            pose_norm = result.pose_landmarks or []
 
-            if not pose_world:
+            world_list = _as_landmark_list(pose_world[0]) if pose_world else []
+            norm_list = _as_landmark_list(pose_norm[0]) if pose_norm else []
+
+            if not world_list:
                 LOGGER.warning(
                     "No pose detected at frame %d (t=%.3fs).", frame_idx, timestamp_ms / 1000.0
                 )
@@ -220,34 +235,27 @@ def extract(video_input: VideoInput, cfg: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 continue
 
-            world_landmarks = pose_world[0].landmark
-            norm_landmarks = pose_norm[0].landmark if pose_norm else []
-
             landmarks_payload: Dict[str, Dict[str, float]] = {}
             visibility_values: List[float] = []
 
             for idx, name in enumerate(LANDMARK_NAMES):
-                if idx >= len(world_landmarks):
+                if idx >= len(world_list):
                     break
-                world_lm = world_landmarks[idx]
-                vis = 0.0
-                presence = 0.0
-                if idx < len(norm_landmarks):
-                    norm_lm = norm_landmarks[idx]
-                    vis = float(getattr(norm_lm, "visibility", 0.0))
-                    presence = float(getattr(norm_lm, "presence", 0.0))
-                    visibility_values.append(vis)
-                else:
-                    visibility_values.append(float(getattr(world_lm, "visibility", 0.0)))
-                    vis = float(getattr(world_lm, "visibility", 0.0))
-                    presence = float(getattr(world_lm, "presence", 0.0))
+                wlm = world_list[idx]
+                nvis = 0.0
+                npres = 0.0
+                if idx < len(norm_list):
+                    nlm = norm_list[idx]
+                    nvis = float(getattr(nlm, "visibility", 0.0))
+                    npres = float(getattr(nlm, "presence", 0.0))
+                    visibility_values.append(nvis)
 
                 landmarks_payload[name] = {
-                    "x": float(world_lm.x),
-                    "y": float(world_lm.y),
-                    "z": float(world_lm.z),
-                    "visibility": vis,
-                    "presence": presence,
+                    "x": float(getattr(wlm, "x", 0.0)),
+                    "y": float(getattr(wlm, "y", 0.0)),
+                    "z": float(getattr(wlm, "z", 0.0)),
+                    "visibility": nvis,
+                    "presence": npres,
                 }
 
             conf = float(np.mean(visibility_values)) if visibility_values else 0.0
