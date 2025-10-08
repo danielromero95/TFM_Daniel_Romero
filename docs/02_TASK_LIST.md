@@ -262,4 +262,5 @@ Examples:
 <!-- === BEGIN: AGENT-EDITABLE TASK COMPLETION LEDGER === -->
 <!-- (append completed task entries below this line) -->
 [2025-10-08] T02.1–T02.3 — [DONE] — Pose3D extract() returns PoseTimeSeries; wired to app
+[2025-10-08] T02.FIX — [DONE] — PoseLandmarker result unpacking handles list and .landmark
 <!-- === END: AGENT-EDITABLE TASK COMPLETION LEDGER === -->
