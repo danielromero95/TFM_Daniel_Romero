@@ -1,72 +1,78 @@
-import io
-import time
-import yaml
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+from typing import Any, Dict
+
 import streamlit as st
+import yaml
 
-st.set_page_config(page_title="Squat MVP", layout="wide")
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# Load config once
+from ml.pose3d import extract  # noqa: E402
+
+CFG_PATH = ROOT / "config" / "default.yml"
+
+
 @st.cache_resource
-def load_cfg():
-    with open("config/default.yml", "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def load_cfg() -> Dict[str, Any]:
+    with CFG_PATH.open("r", encoding="utf-8") as f:
+        cfg: Dict[str, Any] = yaml.safe_load(f) or {}
+    models_cfg = cfg.setdefault("models", {})
+    models_cfg.setdefault(
+        "pose_landmarker_path", str(ROOT / "assets" / "models" / "pose_landmarker_lite.task")
+    )
+    return cfg
+
 
 cfg = load_cfg()
+logger = logging.getLogger(__name__)
 
+st.set_page_config(page_title="Squat MVP", layout="wide")
 st.title("AI-Powered Exercise Technique Analyzer — MVP")
 st.caption("Streamlit + MediaPipe 3D | CPU-only | Frontal & Lateral views")
 
-
 # Sidebar controls
 view = st.sidebar.selectbox("Camera view", ["Lateral", "Frontal"], index=0)
-st.sidebar.markdown("**Config snapshot**")  # light peek for debugging
+st.sidebar.markdown("**Config snapshot**")
 st.sidebar.json({"fps_cap": cfg.get("fps_cap"), "smoothing_alpha": cfg.get("smoothing_alpha")})
 
 uploaded = st.file_uploader("Upload a short squat video (.mp4/.mov)", type=["mp4", "mov"])  # noqa: E501
-
 analyze = st.button("Analyze", type="primary", disabled=uploaded is None)
 
 tabs = st.tabs(["Overview", "Per-Rep", "Visuals", "Export"])  # placeholders
 
 if analyze and uploaded is not None:
-    with st.spinner("Running analysis (pose → preprocess → segment → KPIs → faults)…"):
-        time.sleep(0.5)  # placeholder for pipeline latency
-        # TODO: call the pipeline functions once implemented (per 02_TASK_LIST.md)
-        # from ml.pose3d import extract
-        # from ml.preprocess import clean
-        # from ml.segment import segment
-        # from ml.kpi import compute
-        # from ml.faults import detect
-        # from ml.feedback import to_text
-        # series = extract(uploaded, cfg)
-        # series = clean(series, cfg)
-        # windows = segment(series, cfg)
-        # rep_metrics = compute(series, windows, cfg, view)
-        # flags = [detect(m, cfg, view) for m in rep_metrics]
-        # feedback = [to_text(f, view) for f in flags]
-        st.session_state["_demo_results"] = {
-            "rep_count": 3,
-            "avg_knee_angle_deg": 98.7,
-            "faults": {"insufficient_depth": 1, "knee_valgus": 0, "excessive_trunk_lean": 1},
-            "view": view
-        }
+    with st.spinner("Extracting 3D pose landmarks…"):
+        try:
+            series = extract(uploaded, cfg)
+        except FileNotFoundError as exc:
+            st.error(f"Model missing: {exc}")
+            logger.exception("Pose extraction failed: model missing")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Pose extraction failed: {exc}")
+            logger.exception("Pose extraction failed")
+        else:
+            st.session_state["series"] = series
+            st.session_state["view"] = view
 
-if "_demo_results" in st.session_state:
-    res = st.session_state["_demo_results"]
-    with tabs[0]:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Rep count", res["rep_count"])
-        col2.metric("Avg knee angle (°)", f"{res['avg_knee_angle_deg']:.1f}")
-        col3.json(res["faults"])
-
-    with tabs[1]:
-        st.write("Per-rep table — placeholder (to be filled by pipeline output)")
-
-    with tabs[2]:
-        st.write("Visuals — placeholder for overlay player and angle charts")  # charts must use matplotlib without custom colors
-
-    with tabs[3]:
-        st.download_button("Download CSV (placeholder)", data="rep,depth_ok\n1,True\n2,False\n3,True\n", file_name="results_demo.csv", mime="text/csv")  # noqa: E501
-else:
-    with tabs[0]:
+with tabs[0]:
+    if "series" in st.session_state:
+        series = st.session_state["series"]
+        frames_processed = len(series.get("frames", []))
+        st.success(f"Frames processed: {frames_processed}")
+        st.caption(f"Effective FPS: {series.get('fps', 0.0):.1f}")
+    else:
         st.info("Upload a video and click Analyze to see results.")
+
+with tabs[1]:
+    st.write("Per-rep table — pending downstream pipeline implementation.")
+
+with tabs[2]:
+    st.write("Visuals — pose overlay and charts to be added in later epics.")
+
+with tabs[3]:
+    st.write("Export options will appear once the full pipeline is available.")
