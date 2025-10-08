@@ -20,6 +20,9 @@
 ├─ config/
 │  └─ default.yml     # runtime parameters (see below)
 ├─ assets/
+│  ├─ models/          # MediaPipe models (.task)
+│  │  ├─ pose_landmarker_lite.task   # CPU-friendly (recommended)
+│  │  └─ pose_landmarker_full.task   # slower but more accurate
 │  ├─ demo_clips/     # short consented example videos (optional)
 │  └─ icons/          # UI icons if needed
 ├─ reports/           # exported CSV/JSON results
@@ -124,7 +127,7 @@ AnalysisSummary:
 
 ## Assumptions
 
-- Single exercise (**back squat**), sagittal camera view, CPU-only.
+- Single exercise (**back squat**); supports Frontal & Lateral views (user-selected); CPU-only.
 - Short clips (~10–15 s). If FPS > `fps_cap`, downsample.
 - Time base in seconds; angles in degrees; timestamps UTC.
 
@@ -140,4 +143,7 @@ AnalysisSummary:
 
 <!-- === BEGIN: AGENT-EDITABLE PROJECT STRUCTURE APPENDIX === -->
 <!-- (append new planned file/folder entries below this line) -->
+[2025-10-08] assets/models/ — model assets directory (.task files)
+[2025-10-08] assets/models/pose_landmarker_lite.task — MediaPipe Pose 3D (Lite)
+[2025-10-08] assets/models/pose_landmarker_full.task — MediaPipe Pose 3D (Full)
 <!-- === END: AGENT-EDITABLE PROJECT STRUCTURE APPENDIX === -->

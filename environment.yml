@@ -1,4 +1,4 @@
-name: squat-mvp
+name: gym_env
 channels:
   - conda-forge
 dependencies:
@@ -13,3 +13,4 @@ dependencies:
       - matplotlib>=3.8
       - pydantic>=2.6
       - pytest>=8.0
+      - pyyaml>=6
