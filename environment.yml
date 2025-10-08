@@ -1,0 +1,15 @@
+name: squat-mvp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - streamlit>=1.35
+      - mediapipe>=0.10.14
+      - opencv-python>=4.9.0.80
+      - numpy>=1.26
+      - pandas>=2.1
+      - matplotlib>=3.8
+      - pydantic>=2.6
+      - pytest>=8.0

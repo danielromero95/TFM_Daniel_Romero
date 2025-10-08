@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.env/
+
+# Streamlit
+.streamlit/
+
+# Data & outputs
+assets/demo_clips/*
+!assets/demo_clips/.keep
+reports/*
+logs/*
+!logs/.keep
+
+# OS
+.DS_Store
+Thumbs.db
