@@ -12,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ml import preprocess  # noqa: E402
+import pandas as pd
+
+from ml import preprocess, segment  # noqa: E402
 from ml.pose3d import extract  # noqa: E402
 
 CFG_PATH = ROOT / "config" / "default.yml"
@@ -49,8 +51,11 @@ tabs = st.tabs(["Overview", "Per-Rep", "Visuals", "Export"])  # placeholders
 if analyze and uploaded is not None:
     with st.spinner("Extracting 3D pose landmarks…"):
         try:
-            series = extract(uploaded, cfg)
-            series_clean = preprocess.clean(series, cfg)
+            series_raw = extract(uploaded, cfg)
+            series_interp = preprocess.interpolate(series_raw, cfg)
+            series_smooth = preprocess.smooth(series_interp, cfg)
+            rep_windows = segment.segment(series_smooth, cfg)
+            series_clean = preprocess.normalize(series_smooth, cfg)
         except FileNotFoundError as exc:
             st.error(f"Model missing: {exc}")
             logger.exception("Pose extraction failed: model missing")
@@ -58,24 +63,45 @@ if analyze and uploaded is not None:
             st.error(f"Pose extraction failed: {exc}")
             logger.exception("Pose extraction failed")
         else:
-            st.session_state["series"] = series
+            st.session_state["series_raw"] = series_raw
+            st.session_state["series_smooth"] = series_smooth
             st.session_state["series_clean"] = series_clean
+            st.session_state["rep_windows"] = rep_windows
             st.session_state["view"] = view
 
 with tabs[0]:
-    if "series" in st.session_state:
-        series = st.session_state["series"]
-        frames_processed = len(series.get("frames", []))
+    if "series_raw" in st.session_state:
+        series_raw = st.session_state["series_raw"]
+        frames_processed = len(series_raw.get("frames", []))
         st.success(f"Frames processed: {frames_processed}")
-        st.caption(f"Effective FPS: {series.get('fps', 0.0):.1f}")
+        st.caption(f"Effective FPS: {series_raw.get('fps', 0.0):.1f}")
         if "series_clean" in st.session_state:
             series_clean = st.session_state["series_clean"]
             st.caption(f"Cleaned frames: {len(series_clean.get('frames', []))}")
+        if "rep_windows" in st.session_state:
+            rep_count = len(st.session_state["rep_windows"])
+            st.caption(f"Rep count: {rep_count}")
     else:
         st.info("Upload a video and click Analyze to see results.")
 
 with tabs[1]:
-    st.write("Per-rep table — pending downstream pipeline implementation.")
+    rep_windows = st.session_state.get("rep_windows")
+    if rep_windows:
+        rep_rows = [
+            {
+                "rep_id": rep["rep_id"],
+                "start_t": rep["start_t"],
+                "end_t": rep["end_t"],
+                "duration_s": rep["end_t"] - rep["start_t"],
+            }
+            for rep in rep_windows
+        ]
+        rep_df = pd.DataFrame(rep_rows)
+        st.dataframe(rep_df, use_container_width=True)
+    elif rep_windows is not None:
+        st.warning("No reps detected.")
+    else:
+        st.info("Run an analysis to populate per-rep metrics.")
 
 with tabs[2]:
     st.write("Visuals — pose overlay and charts to be added in later epics.")
