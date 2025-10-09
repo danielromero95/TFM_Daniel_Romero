@@ -72,6 +72,17 @@ segmentation:
 
 Load once in `app/app.py` and pass down to modules.
 
+Additional performance tuning knobs (all optional, defaults shown):
+
+```yaml
+performance:
+  sample_rate: 1                  # process every frame (1 = no skipping)
+  preprocess_size:
+    longest_edge_px: 0            # 0 disables resize before pose inference
+  max_workers: 0                  # 0 ⇒ cpu_count() - 1
+  parallel: false                 # toggle parallel extraction in the UI
+```
+
 ---
 
 ## Module handshakes (data shapes)
@@ -81,7 +92,12 @@ Data structures are simple dicts (or dataclasses) with fixed keys.
 ```yaml
 PosePoint: {x: float, y: float, z: float, visibility: float, presence: float}
 PoseFrame: {frame_idx: int, t: float, landmarks: {name: PosePoint}, conf: float}
-PoseTimeSeries: {fps: float, frames: PoseFrame[]}
+PoseTimeSeries:
+  orig_fps: float
+  fps: float
+  sample_rate: int
+  preprocess_size: {longest_edge_px: int}
+  frames: PoseFrame[]
 
 RepWindow: {rep_id: int, start_t: float, end_t: float, start_idx: int, end_idx: int}
 
