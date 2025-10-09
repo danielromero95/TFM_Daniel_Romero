@@ -265,4 +265,5 @@ Examples:
 [2025-10-08] T02.FIX — [DONE] — PoseLandmarker result unpacking handles list and .landmark
 [2025-10-08] T03.1–T03.5 — [DONE] — Preprocess interpolate/smooth/normalize clean wired to UI
 [2025-10-09] T04.1–T04.4 — [DONE] — Rep segmentation on pre-normalized series wired to UI
+[2025-10-09] T05.1–T05.4 — [DONE] — KPI frame+rep metrics wired into UI
 <!-- === END: AGENT-EDITABLE TASK COMPLETION LEDGER === -->
