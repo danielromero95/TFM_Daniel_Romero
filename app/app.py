@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd
 
 from ml import kpi, preprocess, segment  # noqa: E402
@@ -42,6 +44,7 @@ st.caption("Streamlit + MediaPipe 3D | CPU-only | Frontal & Lateral views")
 view = st.sidebar.selectbox("Camera view", ["Lateral", "Frontal"], index=0)
 st.sidebar.markdown("**Config snapshot**")
 st.sidebar.json({"fps_cap": cfg.get("fps_cap"), "smoothing_alpha": cfg.get("smoothing_alpha")})
+auto_tune_enabled = st.sidebar.toggle("Auto-tune segmentation if 0 reps", value=True)
 
 uploaded = st.file_uploader("Upload a short squat video (.mp4/.mov)", type=["mp4", "mov"])  # noqa: E501
 analyze = st.button("Analyze", type="primary", disabled=uploaded is None)
@@ -55,6 +58,17 @@ if analyze and uploaded is not None:
             series_interp = preprocess.interpolate(series_raw, cfg)
             series_smooth = preprocess.smooth(series_interp, cfg)
             rep_windows = segment.segment(series_smooth, cfg)
+            tuned_params: Dict[str, float] = {}
+            if auto_tune_enabled and len(rep_windows) == 0:
+                rep_windows, tuned_params = segment.auto_tune(series_smooth, cfg)
+            if tuned_params:
+                seg_cfg_diag = dict(cfg.get("segmentation", {}))
+                seg_cfg_diag.update(tuned_params)
+                cfg_for_diag: Dict[str, Any] = dict(cfg)
+                cfg_for_diag["segmentation"] = seg_cfg_diag
+            else:
+                cfg_for_diag = cfg
+            diagnostics = segment.diagnose(series_smooth, cfg_for_diag)
             series_clean = preprocess.normalize(series_smooth, cfg)
             frame_metrics = kpi.frame_metrics(series_smooth, view)
             rep_metrics = kpi.compute(series_smooth, rep_windows, cfg, view)
@@ -72,6 +86,8 @@ if analyze and uploaded is not None:
             st.session_state["frame_metrics"] = frame_metrics
             st.session_state["rep_metrics"] = rep_metrics
             st.session_state["view"] = view
+            st.session_state["seg_tuned_params"] = tuned_params
+            st.session_state["seg_diagnostics"] = diagnostics
 
 with tabs[0]:
     if "series_raw" in st.session_state:
@@ -84,9 +100,15 @@ with tabs[0]:
             st.caption(f"Cleaned frames: {len(series_clean.get('frames', []))}")
         rep_windows_state = st.session_state.get("rep_windows")
         rep_metrics_state = st.session_state.get("rep_metrics") or []
+        tuned_params_state = st.session_state.get("seg_tuned_params") or {}
         if rep_windows_state is not None:
             rep_count = len(rep_windows_state)
             st.caption(f"Rep count: {rep_count}")
+            if tuned_params_state:
+                hip_drop = tuned_params_state.get("hip_min_drop_norm")
+                prominence = tuned_params_state.get("peak_prominence")
+                if hip_drop is not None and prominence is not None:
+                    st.caption(f"Auto-tuned: hip_drop={hip_drop:.3f}, prominence={prominence:.3f}")
             if rep_metrics_state:
                 rep_df = pd.DataFrame(rep_metrics_state)
                 summary_cols = {
@@ -131,7 +153,72 @@ with tabs[1]:
         st.info("Run an analysis to populate per-rep metrics.")
 
 with tabs[2]:
-    st.write("Visuals — pose overlay and charts to be added in later epics.")
+    diagnostics = st.session_state.get("seg_diagnostics")
+    if diagnostics:
+        hip_signal = diagnostics.get("hip_signal")
+        smooth = diagnostics.get("smooth")
+        time_axis = diagnostics.get("t")
+        hip_signal_arr = (
+            np.asarray(hip_signal, dtype=float)
+            if hip_signal is not None
+            else np.array([], dtype=float)
+        )
+        smooth_arr = (
+            np.asarray(smooth, dtype=float)
+            if smooth is not None
+            else np.array([], dtype=float)
+        )
+        time_axis_arr = (
+            np.asarray(time_axis, dtype=float)
+            if time_axis is not None
+            else np.array([], dtype=float)
+        )
+        mins_idx = diagnostics.get("mins_idx")
+        mins_idx_arr = (
+            np.asarray(mins_idx, dtype=int)
+            if mins_idx is not None
+            else np.array([], dtype=int)
+        )
+        if (
+            hip_signal_arr.size > 0
+            and smooth_arr.size > 0
+            and time_axis_arr.size > 0
+        ):
+            fig, ax = plt.subplots()
+            ax.plot(time_axis_arr, hip_signal_arr, label="Hip signal")
+            ax.plot(time_axis_arr, smooth_arr, label="Smoothed")
+            if mins_idx_arr.size > 0:
+                ax.scatter(
+                    time_axis_arr[mins_idx_arr],
+                    smooth_arr[mins_idx_arr],
+                    marker="o",
+                    label="Minima",
+                )
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Normalized height")
+            ax.legend(loc="best")
+            st.pyplot(fig)
+            plt.close(fig)
+            params = diagnostics.get("params", {})
+            hip_drop = params.get("hip_min_drop_norm")
+            prominence = params.get("peak_prominence")
+            min_duration = params.get("min_rep_duration_s")
+            window_size = params.get("window_size")
+            hip_drop_str = f"{hip_drop:.3f}" if hip_drop is not None else "nan"
+            prominence_str = f"{prominence:.3f}" if prominence is not None else "nan"
+            min_duration_str = f"{min_duration:.2f}" if min_duration is not None else "nan"
+            window_str = str(window_size) if window_size is not None else "?"
+            st.caption(
+                "Params used: "
+                f"hip_drop={hip_drop_str}, "
+                f"prominence={prominence_str}, "
+                f"min_duration={min_duration_str}s, "
+                f"window={window_str}"
+            )
+        else:
+            st.info("Diagnostics unavailable for plotting.")
+    else:
+        st.info("Run an analysis to see segmentation diagnostics.")
 
 with tabs[3]:
     st.write("Export options will appear once the full pipeline is available.")
