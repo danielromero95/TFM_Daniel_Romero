@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd
 
-from ml import kpi, preprocess, segment  # noqa: E402
+from ml import kpi, overlay, preprocess, segment  # noqa: E402
 from ml.pose3d import extract  # noqa: E402
 
 CFG_PATH = ROOT / "config" / "default.yml"
@@ -52,6 +52,8 @@ analyze = st.button("Analyze", type="primary", disabled=uploaded is None)
 tabs = st.tabs(["Overview", "Per-Rep", "Visuals", "Export"])  # placeholders
 
 if analyze and uploaded is not None:
+    st.session_state["video_bytes"] = uploaded.getvalue()
+    uploaded.seek(0)
     with st.spinner("Extracting 3D pose landmarks…"):
         try:
             series_raw = extract(uploaded, cfg)
@@ -88,6 +90,8 @@ if analyze and uploaded is not None:
             st.session_state["view"] = view
             st.session_state["seg_tuned_params"] = tuned_params
             st.session_state["seg_diagnostics"] = diagnostics
+            st.session_state.pop("overlay_preview_bytes", None)
+            st.session_state.pop("overlay_preview_meta", None)
 
 with tabs[0]:
     if "series_raw" in st.session_state:
@@ -153,6 +157,59 @@ with tabs[1]:
         st.info("Run an analysis to populate per-rep metrics.")
 
 with tabs[2]:
+    st.markdown("### Overlay preview")
+    video_bytes_state = st.session_state.get("video_bytes")
+    series_for_overlay = st.session_state.get("series_raw")
+    if not video_bytes_state or series_for_overlay is None:
+        st.info("Run an analysis to enable the overlay preview.")
+    else:
+        with st.form("overlay_preview_form"):
+            preview_width = st.slider("Preview width (px)", 480, 960, 640, step=40)
+            preview_fps = st.slider("Preview FPS", 6, 12, 8, step=1)
+            preview_conf = st.slider("Confidence threshold", 0.2, 0.6, 0.3, step=0.05)
+            render_clicked = st.form_submit_button("Render overlay preview")
+
+        if render_clicked:
+            with st.spinner("Rendering overlay preview…"):
+                try:
+                    preview_bytes = overlay.render_overlay(
+                        video_bytes_state,
+                        series_for_overlay,
+                        cfg,
+                        out_fps=float(preview_fps),
+                        out_width=int(preview_width),
+                        conf_thresh=float(preview_conf),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Overlay rendering failed: {exc}")
+                else:
+                    st.session_state["overlay_preview_bytes"] = preview_bytes
+                    st.session_state["overlay_preview_meta"] = {
+                        "frames": len(series_for_overlay.get("frames", [])),
+                        "fps": float(preview_fps),
+                        "width": int(preview_width),
+                        "conf": float(preview_conf),
+                    }
+
+        preview_bytes_state = st.session_state.get("overlay_preview_bytes")
+        preview_meta_state = st.session_state.get("overlay_preview_meta") or {}
+        if preview_bytes_state:
+            st.video(preview_bytes_state)
+            st.download_button(
+                "Download overlay MP4",
+                data=preview_bytes_state,
+                file_name="overlay_preview.mp4",
+                mime="video/mp4",
+            )
+            if preview_meta_state:
+                frames_overlaid = preview_meta_state.get("frames")
+                fps_preview = preview_meta_state.get("fps")
+                width_preview = preview_meta_state.get("width")
+                st.caption(
+                    f"Rendered {frames_overlaid} frames at {fps_preview} fps, width {width_preview}px"
+                )
+
+    st.markdown("### Segmentation diagnostics")
     diagnostics = st.session_state.get("seg_diagnostics")
     if diagnostics:
         hip_signal = diagnostics.get("hip_signal")
