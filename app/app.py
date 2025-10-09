@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import logging
@@ -43,7 +44,7 @@ st.set_page_config(page_title="Squat MVP", layout="wide")
 st.title("AI-Powered Exercise Technique Analyzer — MVP")
 st.caption("Streamlit + MediaPipe 3D | CPU-only | Frontal & Lateral views")
 
-DEFAULT_OVERLAY_WIDTH = 640
+DEFAULT_OVERLAY_WIDTH = 720
 DEFAULT_OVERLAY_FPS = 8.0
 DEFAULT_OVERLAY_CONF = 0.3
 
@@ -87,10 +88,10 @@ def _ensure_overlay_preview(cfg: Dict[str, Any]) -> None:
         return
 
     video_hash = hashlib.md5(video_bytes).hexdigest()
-    cached_hash = st.session_state.get("overlay_video_hash")
+    cached_hash = st.session_state.get("overlay_preview_video_hash")
     if (
-        st.session_state.get("overlay_bytes")
-        and st.session_state.get("overlay_mime")
+        st.session_state.get("overlay_preview_bytes")
+        and st.session_state.get("overlay_preview_mime")
         and cached_hash == video_hash
     ):
         return
@@ -108,83 +109,134 @@ def _ensure_overlay_preview(cfg: Dict[str, Any]) -> None:
     except Exception as exc:  # noqa: BLE001
         st.error(f"Overlay rendering failed: {exc}")
         logger.exception("Overlay rendering failed")
-        st.session_state.pop("overlay_bytes", None)
-        st.session_state.pop("overlay_mime", None)
-        st.session_state.pop("overlay_name", None)
-        st.session_state.pop("overlay_video_hash", None)
+        st.session_state.pop("overlay_preview_bytes", None)
+        st.session_state.pop("overlay_preview_mime", None)
+        st.session_state.pop("overlay_preview_name", None)
+        st.session_state.pop("overlay_preview_video_hash", None)
         return
 
-    st.session_state["overlay_bytes"] = data
-    st.session_state["overlay_mime"] = mime
-    st.session_state["overlay_name"] = f"overlay_preview.{ext}" if ext else "overlay_preview"
-    st.session_state["overlay_video_hash"] = video_hash
+    st.session_state["overlay_preview_bytes"] = data
+    st.session_state["overlay_preview_mime"] = mime
+    st.session_state["overlay_preview_name"] = (
+        f"overlay_preview.{ext}" if ext else "overlay_preview"
+    )
+    st.session_state["overlay_preview_video_hash"] = video_hash
 
 
-def _hip_depth_percent(
-    series_raw: Dict[str, Any],
-    cfg: Dict[str, Any],
-    video_shape: Tuple[int, int] | None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    frames = series_raw.get("frames", [])
-    if not isinstance(frames, Iterable):  # type: ignore[arg-type]
-        return np.array([], dtype=float), np.array([], dtype=float)
+def _render_overlay_player(data: bytes, mime: str, *, max_width: int = 720) -> None:
+    if not data or not mime:
+        return
 
-    height = int(video_shape[0]) if video_shape else 0
-    height = max(height, 1)
+    try:
+        encoded = base64.b64encode(data).decode("utf-8")
+    except Exception:  # noqa: BLE001
+        st.video(data, format=mime)
+        return
 
-    times: list[float] = []
-    hip_values: list[float] = []
-    for frame in frames:
-        if not isinstance(frame, dict):
-            continue
-        times.append(float(frame.get("t", len(times))))
-        landmarks = frame.get("landmarks", {})
-        left = landmarks.get("LEFT_HIP") if isinstance(landmarks, dict) else None
-        right = landmarks.get("RIGHT_HIP") if isinstance(landmarks, dict) else None
-        samples = []
-        for item in (left, right):
-            if isinstance(item, dict):
-                v_val = item.get("v")
-                if v_val is not None:
-                    try:
-                        samples.append(float(v_val))
-                    except (TypeError, ValueError):
-                        continue
-        if samples:
-            avg_v = float(np.mean(samples))
-            y_px = avg_v * float(height - 1)
-            hip_height = float(height - 1) - y_px
-            hip_values.append(hip_height)
-        else:
-            hip_values.append(np.nan)
+    video_html = f"""
+        <video controls playsinline style="width: min(100%, {max_width}px); border-radius: 4px;">
+            <source src="data:{mime};base64,{encoded}" type="{mime}">
+            Your browser does not support the video tag.
+        </video>
+    """
+    st.markdown(video_html, unsafe_allow_html=True)
 
-    if not hip_values:
-        return np.array([], dtype=float), np.array([], dtype=float)
 
-    hip_series = pd.Series(hip_values, dtype=float)
-    if hip_series.isna().all():
-        return np.asarray(times, dtype=float), np.zeros_like(np.asarray(times, dtype=float))
+def _plot_lateral_chart(container: Any, diagnostics: Dict[str, Any]) -> None:
+    times = np.asarray(diagnostics.get("t") or [], dtype=float)
+    hip_series = diagnostics.get("smooth")
+    if hip_series is None:
+        hip_series = diagnostics.get("hip_signal")
 
-    hip_series = hip_series.interpolate(limit_direction="both")
-    hip_arr = hip_series.to_numpy(dtype=float)
+    y = np.asarray(hip_series or [], dtype=float)
+    n = min(times.size, y.size)
+    if n == 0:
+        container.info("Hip depth chart unavailable for this clip.")
+        return
 
-    fps = float(series_raw.get("fps", 0.0) or 0.0)
-    if fps <= 0.0:
-        fps = float(cfg.get("fps_cap", 30.0) or 30.0)
+    times = times[:n]
+    y = y[:n]
+    max_y = float(np.nanmax(y))
+    min_y = float(np.nanmin(y))
+    if not np.isfinite(max_y) or not np.isfinite(min_y) or abs(max_y - min_y) < 1e-9:
+        container.info("Hip depth chart unavailable for this clip.")
+        return
 
-    smooth = segment._moving_average(hip_arr, fps) if hip_arr.size else hip_arr  # type: ignore[attr-defined]
-    if smooth.size == 0:
-        return np.asarray(times, dtype=float), smooth
+    depth_pct = (max_y - y) / (max_y - min_y + 1e-9) * 100.0
 
-    min_val = float(np.nanmin(smooth))
-    max_val = float(np.nanmax(smooth))
-    range_val = max_val - min_val
-    if not np.isfinite(range_val) or abs(range_val) < 1e-6:
-        depth_pct = np.zeros_like(smooth)
-    else:
-        depth_pct = 100.0 * (max_val - smooth) / range_val
+    fig, ax = plt.subplots(figsize=(5, 3))
+    ax.plot(times, depth_pct)
 
-    return np.asarray(times, dtype=float), depth_pct
+    mins_idx = diagnostics.get("mins_idx")
+    if isinstance(mins_idx, Iterable):  # type: ignore[arg-type]
+        valid_idx = [
+            int(idx)
+            for idx in mins_idx
+            if isinstance(idx, (int, np.integer)) and 0 <= int(idx) < n
+        ]
+        if valid_idx:
+            idx_array = np.asarray(valid_idx, dtype=int)
+            ax.plot(times[idx_array], depth_pct[idx_array], marker="v", linestyle="None", markersize=6)
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Hip depth (% of clip range)")
+    ax.set_ylim(0, 100)
+    ax.set_yticks(np.linspace(0, 100, 6))
+    container.pyplot(fig, clear_figure=True)
+    plt.close(fig)
+    container.caption("0% = highest hips; 100% = lowest (visualization only).")
+
+
+def _plot_frontal_chart(
+    container: Any,
+    diagnostics: Dict[str, Any],
+    frame_metrics_obj: Any,
+) -> None:
+    times = np.asarray(diagnostics.get("t") or [], dtype=float)
+
+    knee_angles = np.array([], dtype=float)
+    if frame_metrics_obj is not None:
+        knee_angles = np.asarray(frame_metrics_obj.get("knee_angle_deg"), dtype=float)
+        if knee_angles.size == 0:
+            left = np.asarray(frame_metrics_obj.get("knee_angle_deg_left"), dtype=float)
+            right = np.asarray(frame_metrics_obj.get("knee_angle_deg_right"), dtype=float)
+            candidates = [arr for arr in (left, right) if arr.size]
+            if len(candidates) == 2:
+                with np.errstate(invalid="ignore"):
+                    knee_angles = np.nanmean(np.stack(candidates), axis=0)
+            elif candidates:
+                knee_angles = candidates[0]
+
+    n = min(times.size, knee_angles.size)
+    if n == 0:
+        container.info("Knee angle chart unavailable for this clip.")
+        return
+
+    times = times[:n]
+    knee_angles = knee_angles[:n]
+    if not np.isfinite(knee_angles).any():
+        container.info("Knee angle chart unavailable for this clip.")
+        return
+
+    fig, ax = plt.subplots(figsize=(5, 3))
+    ax.plot(times, knee_angles)
+
+    mins_idx = diagnostics.get("mins_idx")
+    if isinstance(mins_idx, Iterable):  # type: ignore[arg-type]
+        valid_idx = [
+            int(idx)
+            for idx in mins_idx
+            if isinstance(idx, (int, np.integer)) and 0 <= int(idx) < n
+        ]
+        if valid_idx:
+            idx_array = np.asarray(valid_idx, dtype=int)
+            ax.plot(times[idx_array], knee_angles[idx_array], marker="v", linestyle="None", markersize=6)
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Knee flexion (°)")
+    ax.set_ylim(0, 180)
+    container.pyplot(fig, clear_figure=True)
+    plt.close(fig)
 
 # Sidebar controls
 view = st.sidebar.selectbox("Camera view", ["Lateral", "Frontal"], index=0)
@@ -236,10 +288,10 @@ if analyze and uploaded is not None:
             st.session_state["view"] = view
             st.session_state["seg_tuned_params"] = tuned_params
             st.session_state["seg_diagnostics"] = diagnostics
-            st.session_state.pop("overlay_bytes", None)
-            st.session_state.pop("overlay_mime", None)
-            st.session_state.pop("overlay_name", None)
-            st.session_state.pop("overlay_video_hash", None)
+            st.session_state.pop("overlay_preview_bytes", None)
+            st.session_state.pop("overlay_preview_mime", None)
+            st.session_state.pop("overlay_preview_name", None)
+            st.session_state.pop("overlay_preview_video_hash", None)
             st.session_state.pop("video_shape", None)
             _cache_video_shape(cfg)
             _ensure_overlay_preview(cfg)
@@ -309,12 +361,14 @@ with tabs[1]:
 
 with tabs[2]:
     st.markdown("### Visuals")
-    overlay_bytes = st.session_state.get("overlay_bytes")
-    overlay_mime = st.session_state.get("overlay_mime")
-    overlay_name = st.session_state.get("overlay_name") or "overlay_preview"
-    series_for_overlay = st.session_state.get("series_raw")
+    overlay_bytes = st.session_state.get("overlay_preview_bytes")
+    overlay_mime = st.session_state.get("overlay_preview_mime")
+    overlay_name = st.session_state.get("overlay_preview_name") or "overlay_preview"
     diagnostics = st.session_state.get("seg_diagnostics") or {}
+    series_for_overlay = st.session_state.get("series_raw")
     video_shape = st.session_state.get("video_shape")
+    frame_metrics_state = st.session_state.get("frame_metrics")
+    analyzed_view = st.session_state.get("view") or view
 
     if series_for_overlay and not video_shape:
         _cache_video_shape(cfg)
@@ -322,16 +376,16 @@ with tabs[2]:
 
     if series_for_overlay and (not overlay_bytes or not overlay_mime):
         _ensure_overlay_preview(cfg)
-        overlay_bytes = st.session_state.get("overlay_bytes")
-        overlay_mime = st.session_state.get("overlay_mime")
-        overlay_name = st.session_state.get("overlay_name") or overlay_name
+        overlay_bytes = st.session_state.get("overlay_preview_bytes")
+        overlay_mime = st.session_state.get("overlay_preview_mime")
+        overlay_name = st.session_state.get("overlay_preview_name") or overlay_name
 
     if not overlay_bytes or not overlay_mime:
         st.info("Run an analysis to see the overlay and diagnostics.")
     else:
-        left_col, right_col = st.columns([3, 2])
+        left_col, right_col = st.columns([3, 2], gap="medium")
         with left_col:
-            st.video(overlay_bytes, format=overlay_mime)
+            _render_overlay_player(overlay_bytes, overlay_mime, max_width=DEFAULT_OVERLAY_WIDTH)
             st.download_button(
                 "Download overlay",
                 data=overlay_bytes,
@@ -340,64 +394,32 @@ with tabs[2]:
             )
 
         with right_col:
-            if series_for_overlay:
-                times, depth_pct = _hip_depth_percent(series_for_overlay, cfg, video_shape)
-                if depth_pct.size and times.size:
-                    fig, ax = plt.subplots()
-                    ax.plot(times, depth_pct, color="#1f77b4", linewidth=2)
-
-                    mins_idx = diagnostics.get("mins_idx")
-                    if isinstance(mins_idx, Iterable):  # type: ignore[arg-type]
-                        valid_idx = [
-                            int(idx)
-                            for idx in mins_idx
-                            if isinstance(idx, (int, np.integer)) and 0 <= int(idx) < depth_pct.size
-                        ]
-                        if valid_idx:
-                            idx_array = np.asarray(valid_idx, dtype=int)
-                            ax.scatter(
-                                times[idx_array],
-                                depth_pct[idx_array],
-                                marker="v",
-                                s=30,
-                                color="#ff7f0e",
-                                edgecolor="none",
-                            )
-
-                    ax.set_xlabel("Time (s)")
-                    ax.set_ylabel("Hip depth (% of clip range)")
-                    ax.set_ylim(0, 100)
-                    ax.set_yticks(np.linspace(0, 100, 6))
-                    ax.grid(axis="y", alpha=0.2)
-                    st.pyplot(fig, clear_figure=True)
-                    plt.close(fig)
-                else:
-                    st.info("Hip depth chart unavailable for this clip.")
+            normalized_view = (analyzed_view or "").strip().lower()
+            if normalized_view == "frontal":
+                _plot_frontal_chart(right_col, diagnostics, frame_metrics_state)
             else:
-                st.info("Hip depth chart unavailable for this clip.")
+                _plot_lateral_chart(right_col, diagnostics)
 
-            right_col.caption(
-                "0% = highest hip position in this clip; 100% = lowest. "
-                "Used only for visualization; segmentation uses absolute thresholds under the hood."
-            )
-
-        params = diagnostics.get("params", {})
-        if params:
-            hip_drop = params.get("hip_min_drop_norm")
-            prominence = params.get("peak_prominence")
-            min_duration = params.get("min_rep_duration_s")
-            window_size = params.get("window_size")
-            hip_drop_str = f"{hip_drop:.3f}" if hip_drop is not None else "nan"
-            prominence_str = f"{prominence:.3f}" if prominence is not None else "nan"
-            min_duration_str = f"{min_duration:.2f}" if min_duration is not None else "nan"
-            window_str = str(window_size) if window_size is not None else "?"
-            st.caption(
-                "Segmentation params: "
-                f"hip_drop={hip_drop_str}, "
-                f"prominence={prominence_str}, "
-                f"min_duration={min_duration_str}s, "
-                f"window={window_str}"
-            )
+            params = diagnostics.get("params") or {}
+            if params:
+                hip_drop = params.get("hip_min_drop_norm")
+                prominence = params.get("peak_prominence")
+                min_duration = params.get("min_rep_duration_s")
+                window_size = params.get("window_size")
+                hip_drop_str = f"{hip_drop:.3f}" if hip_drop is not None else "nan"
+                prominence_str = f"{prominence:.3f}" if prominence is not None else "nan"
+                min_duration_str = f"{min_duration:.2f}" if min_duration is not None else "nan"
+                try:
+                    window_str = str(int(window_size))
+                except (TypeError, ValueError):
+                    window_str = "?"
+                right_col.caption(
+                    "Segmentation params: "
+                    f"hip_drop={hip_drop_str}, "
+                    f"prominence={prominence_str}, "
+                    f"min_duration={min_duration_str}s, "
+                    f"window={window_str}"
+                )
 
 with tabs[3]:
     st.write("Export options will appear once the full pipeline is available.")
