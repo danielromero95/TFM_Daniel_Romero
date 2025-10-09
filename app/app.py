@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from ml import preprocess  # noqa: E402
 from ml.pose3d import extract  # noqa: E402
 
 CFG_PATH = ROOT / "config" / "default.yml"
@@ -49,6 +50,7 @@ if analyze and uploaded is not None:
     with st.spinner("Extracting 3D pose landmarks…"):
         try:
             series = extract(uploaded, cfg)
+            series_clean = preprocess.clean(series, cfg)
         except FileNotFoundError as exc:
             st.error(f"Model missing: {exc}")
             logger.exception("Pose extraction failed: model missing")
@@ -57,6 +59,7 @@ if analyze and uploaded is not None:
             logger.exception("Pose extraction failed")
         else:
             st.session_state["series"] = series
+            st.session_state["series_clean"] = series_clean
             st.session_state["view"] = view
 
 with tabs[0]:
@@ -65,6 +68,9 @@ with tabs[0]:
         frames_processed = len(series.get("frames", []))
         st.success(f"Frames processed: {frames_processed}")
         st.caption(f"Effective FPS: {series.get('fps', 0.0):.1f}")
+        if "series_clean" in st.session_state:
+            series_clean = st.session_state["series_clean"]
+            st.caption(f"Cleaned frames: {len(series_clean.get('frames', []))}")
     else:
         st.info("Upload a video and click Analyze to see results.")
 
