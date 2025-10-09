@@ -149,7 +149,7 @@ def smooth(series: PoseTimeSeries, cfg: Mapping[str, Any]) -> PoseTimeSeries:
 
 
 def normalize(series: PoseTimeSeries, cfg: Mapping[str, Any]) -> PoseTimeSeries:
-    """Center poses at hip midpoint and scale by torso length per frame."""
+    """Center poses using a constant hip anchor and scale by torso length per frame."""
     del cfg  # Reserved for future runtime options.
 
     frames = series.get("frames", []) or []
@@ -181,10 +181,19 @@ def normalize(series: PoseTimeSeries, cfg: Mapping[str, Any]) -> PoseTimeSeries:
     diff_sq = np.where(np.isnan(diff_sq), 0.0, diff_sq)
     scale = np.sqrt(np.sum(diff_sq, axis=1))
     scale = np.maximum(scale, 1e-6)
-    scale = scale.reshape(-1, 1)
+
+    hip_valid_mask = np.all(np.isfinite(hip_mid), axis=1)
+    if np.any(hip_valid_mask):
+        first_valid = int(np.flatnonzero(hip_valid_mask)[0])
+        anchor_hip = hip_mid[first_valid]
+    else:
+        with np.errstate(invalid="ignore"):
+            anchor_hip = np.nanmean(hip_mid, axis=0)
+        if np.any(np.isnan(anchor_hip)):
+            anchor_hip = np.zeros(3, dtype=float)
 
     for name, arr in arrays.items():
-        arrays[name] = (arr - hip_mid) / scale
+        arrays[name] = (arr - anchor_hip) / scale[:, None]
 
     return _rebuild_series(series, arrays)
 
