@@ -107,8 +107,19 @@ with tabs[0]:
             if tuned_params_state:
                 hip_drop = tuned_params_state.get("hip_min_drop_norm")
                 prominence = tuned_params_state.get("peak_prominence")
+                min_duration = tuned_params_state.get("min_rep_duration_s")
                 if hip_drop is not None and prominence is not None:
-                    st.caption(f"Auto-tuned: hip_drop={hip_drop:.3f}, prominence={prominence:.3f}")
+                    if min_duration is not None:
+                        st.caption(
+                            "Auto-tuned: "
+                            f"hip_drop={hip_drop:.3f}, "
+                            f"prominence={prominence:.3f}, "
+                            f"min_rep_duration_s={min_duration:.2f}"
+                        )
+                    else:
+                        st.caption(
+                            f"Auto-tuned: hip_drop={hip_drop:.3f}, prominence={prominence:.3f}"
+                        )
             if rep_metrics_state:
                 rep_df = pd.DataFrame(rep_metrics_state)
                 summary_cols = {
@@ -179,6 +190,24 @@ with tabs[2]:
             if mins_idx is not None
             else np.array([], dtype=int)
         )
+        candidate_mins_idx = diagnostics.get("candidate_mins_idx")
+        candidate_mins_arr = (
+            np.asarray(candidate_mins_idx, dtype=int)
+            if candidate_mins_idx is not None
+            else np.array([], dtype=int)
+        )
+        candidate_peaks_idx = diagnostics.get("candidate_peaks_idx")
+        candidate_peaks_arr = (
+            np.asarray(candidate_peaks_idx, dtype=int)
+            if candidate_peaks_idx is not None
+            else np.array([], dtype=int)
+        )
+        peaks_idx = diagnostics.get("peaks_idx")
+        peaks_idx_arr = (
+            np.asarray(peaks_idx, dtype=int)
+            if peaks_idx is not None
+            else np.array([], dtype=int)
+        )
         if (
             hip_signal_arr.size > 0
             and smooth_arr.size > 0
@@ -187,6 +216,24 @@ with tabs[2]:
             fig, ax = plt.subplots()
             ax.plot(time_axis_arr, hip_signal_arr, label="Hip signal")
             ax.plot(time_axis_arr, smooth_arr, label="Smoothed")
+            if candidate_peaks_arr.size > 0:
+                ax.scatter(
+                    time_axis_arr[candidate_peaks_arr],
+                    smooth_arr[candidate_peaks_arr],
+                    marker="^",
+                    color="tab:orange",
+                    alpha=0.4,
+                    label="Candidate peaks",
+                )
+            if candidate_mins_arr.size > 0:
+                ax.scatter(
+                    time_axis_arr[candidate_mins_arr],
+                    smooth_arr[candidate_mins_arr],
+                    marker="v",
+                    color="tab:green",
+                    alpha=0.4,
+                    label="Candidate mins",
+                )
             if mins_idx_arr.size > 0:
                 ax.scatter(
                     time_axis_arr[mins_idx_arr],
@@ -194,10 +241,31 @@ with tabs[2]:
                     marker="o",
                     label="Minima",
                 )
+            if peaks_idx_arr.size > 0:
+                ax.scatter(
+                    time_axis_arr[peaks_idx_arr],
+                    smooth_arr[peaks_idx_arr],
+                    marker="x",
+                    color="tab:red",
+                    label="Selected peaks",
+                )
             ax.set_xlabel("Time (s)")
             ax.set_ylabel("Normalized height")
             ax.legend(loc="best")
             st.pyplot(fig)
+            scale_range = float(diagnostics.get("scale_range", 0.0) or 0.0)
+            abs_drop = float(diagnostics.get("abs_drop_used", 0.0) or 0.0)
+            abs_prom = float(diagnostics.get("abs_prom_used", 0.0) or 0.0)
+            params_diag = diagnostics.get("params", {}) or {}
+            window_size = params_diag.get("window_size")
+            st.caption(
+                "Scale range="
+                f"{scale_range:.3f} | abs_drop={abs_drop:.3f} | abs_prom={abs_prom:.3f}"
+                + (f" | window={int(window_size)}" if window_size else "")
+            )
+            rejection_counts = diagnostics.get("rejection_counts") or {}
+            if rejection_counts:
+                st.caption(f"Rejections: {rejection_counts}")
             plt.close(fig)
             params = diagnostics.get("params", {})
             hip_drop = params.get("hip_min_drop_norm")
