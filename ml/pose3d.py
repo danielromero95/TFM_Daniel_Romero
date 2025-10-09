@@ -244,16 +244,24 @@ def extract(video_input: VideoInput, cfg: Dict[str, Any]) -> Dict[str, Any]:
                 wlm = world_list[idx]
                 nvis = 0.0
                 npres = 0.0
+                nu = 0.0
+                nv = 0.0
                 if idx < len(norm_list):
                     nlm = norm_list[idx]
                     nvis = float(getattr(nlm, "visibility", 0.0))
                     npres = float(getattr(nlm, "presence", 0.0))
                     visibility_values.append(nvis)
+                    nu = float(getattr(nlm, "x", 0.0))
+                    nv = float(getattr(nlm, "y", 0.0))
+                    nu = float(np.clip(nu, 0.0, 1.0))
+                    nv = float(np.clip(nv, 0.0, 1.0))
 
                 landmarks_payload[name] = {
                     "x": float(getattr(wlm, "x", 0.0)),
                     "y": float(getattr(wlm, "y", 0.0)),
                     "z": float(getattr(wlm, "z", 0.0)),
+                    "u": nu,
+                    "v": nv,
                     "visibility": nvis,
                     "presence": npres,
                 }
