@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ml import preprocess, segment  # noqa: E402
+from ml import preprocess  # noqa: E402
 from ml.pose3d import extract  # noqa: E402
 
 CFG_PATH = ROOT / "config" / "default.yml"
@@ -51,7 +51,6 @@ if analyze and uploaded is not None:
         try:
             series = extract(uploaded, cfg)
             series_clean = preprocess.clean(series, cfg)
-            rep_windows = segment.segment(series_clean, cfg)
         except FileNotFoundError as exc:
             st.error(f"Model missing: {exc}")
             logger.exception("Pose extraction failed: model missing")
@@ -61,7 +60,6 @@ if analyze and uploaded is not None:
         else:
             st.session_state["series"] = series
             st.session_state["series_clean"] = series_clean
-            st.session_state["rep_windows"] = rep_windows
             st.session_state["view"] = view
 
 with tabs[0]:
@@ -73,31 +71,11 @@ with tabs[0]:
         if "series_clean" in st.session_state:
             series_clean = st.session_state["series_clean"]
             st.caption(f"Cleaned frames: {len(series_clean.get('frames', []))}")
-        rep_windows = st.session_state.get("rep_windows")
-        if rep_windows is not None:
-            st.caption(f"Rep count: {len(rep_windows)}")
     else:
         st.info("Upload a video and click Analyze to see results.")
 
 with tabs[1]:
-    rep_windows = st.session_state.get("rep_windows")
-    if rep_windows is None:
-        st.info("Analyze a video to see per-rep details.")
-    elif len(rep_windows) == 0:
-        st.warning("No repetitions detected.")
-    else:
-        table_rows = []
-        for window in rep_windows:
-            start_t = float(window.get("start_t", 0.0))
-            end_t = float(window.get("end_t", 0.0))
-            row = {
-                "rep_id": int(window.get("rep_id", 0)),
-                "start_t": start_t,
-                "end_t": end_t,
-                "duration_s": end_t - start_t,
-            }
-            table_rows.append(row)
-        st.dataframe(table_rows, use_container_width=True)
+    st.write("Per-rep table — pending downstream pipeline implementation.")
 
 with tabs[2]:
     st.write("Visuals — pose overlay and charts to be added in later epics.")
