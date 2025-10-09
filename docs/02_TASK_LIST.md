@@ -270,5 +270,6 @@ Examples:
 [2025-10-09] T04.FIX — [DONE] — Scale-aware minima segmentation; stable rep count
 [2025-10-09] T09.2 — [DONE] — Overlay preview renders MP4 with pose skeleton in Visuals tab
 [2025-10-09] T09.VIS — [DONE] — Visuals tab auto overlay, view-aware charts, orientation fix
+[2025-10-09] T09.VIS.ENH — [DONE] — Side-by-side Visuals layout with auto overlay and depth/knee charts
 [2025-10-10] T09.VIS.HOTFIX — [DONE] — Visual charts resilient to missing data; NumPy guards applied
 <!-- === END: AGENT-EDITABLE TASK COMPLETION LEDGER === -->
