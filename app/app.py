@@ -204,31 +204,16 @@ with tabs[2]:
             prominence = params.get("peak_prominence")
             min_duration = params.get("min_rep_duration_s")
             window_size = params.get("window_size")
-            scale_range = diagnostics.get("scale_range")
-            abs_drop_used = diagnostics.get("abs_drop_used")
-            abs_prom_used = diagnostics.get("abs_prom_used")
             hip_drop_str = f"{hip_drop:.3f}" if hip_drop is not None else "nan"
             prominence_str = f"{prominence:.3f}" if prominence is not None else "nan"
             min_duration_str = f"{min_duration:.2f}" if min_duration is not None else "nan"
             window_str = str(window_size) if window_size is not None else "?"
-            scale_range_str = (
-                f"{scale_range:.4f}" if scale_range is not None else "nan"
-            )
-            abs_drop_str = (
-                f"{abs_drop_used:.4f}" if abs_drop_used is not None else "nan"
-            )
-            abs_prom_str = (
-                f"{abs_prom_used:.4f}" if abs_prom_used is not None else "nan"
-            )
             st.caption(
                 "Params used: "
                 f"hip_drop={hip_drop_str}, "
                 f"prominence={prominence_str}, "
                 f"min_duration={min_duration_str}s, "
-                f"window={window_str} | "
-                f"scale_range={scale_range_str}, "
-                f"abs_drop_used={abs_drop_str}, "
-                f"abs_prom_used={abs_prom_str}"
+                f"window={window_str}"
             )
         else:
             st.info("Diagnostics unavailable for plotting.")
