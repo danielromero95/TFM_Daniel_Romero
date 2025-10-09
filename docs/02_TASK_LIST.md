@@ -174,6 +174,24 @@ _**DoD (Epic 9):**_ Visuals render on both lateral and frontal demo clips within
 
 ---
 
+## Epic TP — Performance Optimizations
+**Goal:** Improve pose extraction throughput while keeping deterministic, multi-view results.
+
+- [Agent] **TP1 — Frame sampling** — [DONE 2025-10-10]
+  - Downsample frames via `cfg.performance.sample_rate` using `VideoCapture.grab()`/`retrieve()`.
+- [Agent] **TP2 — Pre-resize before pose** — [DONE 2025-10-10]
+  - Resize frames to `cfg.performance.preprocess_size.longest_edge_px` prior to inference.
+- [Agent] **TP3 — Parallel extractor** — [DONE 2025-10-10]
+  - Add `extract_parallel` using `ProcessPoolExecutor` and `cfg.performance.max_workers`.
+- [Agent] **TP4 — Per-process models** — [DONE 2025-10-10]
+  - Ensure each worker instantiates its own Pose Landmarker instance.
+- [Agent] **TP5 — Sequential fallback & determinism** — [DONE 2025-10-10]
+  - Match sequential outputs when sampling disabled; fallback automatically when needed.
+- [Agent] **TP6 — UI controls & metadata** — [DONE 2025-10-10]
+  - Expose performance knobs in Streamlit and capture metadata in exports.
+
+---
+
 ## Epic 10 — Export
 **Goal:** CSV/JSON download of per‑rep data.
 

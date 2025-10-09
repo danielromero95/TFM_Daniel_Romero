@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import hashlib
+import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -20,7 +23,7 @@ import numpy as np  # noqa: E402
 import pandas as pd
 
 from ml import kpi, overlay, preprocess, segment  # noqa: E402
-from ml.pose3d import extract, iter_frames  # noqa: E402
+from ml.pose3d import extract, extract_parallel, iter_frames  # noqa: E402
 
 CFG_PATH = ROOT / "config" / "default.yml"
 
@@ -33,6 +36,12 @@ def load_cfg() -> Dict[str, Any]:
     models_cfg.setdefault(
         "pose_landmarker_path", str(ROOT / "assets" / "models" / "pose_landmarker_lite.task")
     )
+    performance_cfg = cfg.setdefault("performance", {})
+    performance_cfg.setdefault("sample_rate", 1)
+    preprocess_cfg = performance_cfg.setdefault("preprocess_size", {})
+    preprocess_cfg.setdefault("longest_edge_px", 0)
+    performance_cfg.setdefault("max_workers", 0)
+    performance_cfg.setdefault("parallel", False)
     return cfg
 
 
@@ -339,9 +348,57 @@ def _plot_frontal_chart(
 
 # Sidebar controls
 view = st.sidebar.selectbox("Camera view", ["Lateral", "Frontal"], index=0)
-st.sidebar.markdown("**Config snapshot**")
-st.sidebar.json({"fps_cap": cfg.get("fps_cap"), "smoothing_alpha": cfg.get("smoothing_alpha")})
 auto_tune_enabled = st.sidebar.toggle("Auto-tune segmentation if 0 reps", value=True)
+
+performance_defaults = cfg.get("performance", {}) or {}
+preprocess_defaults = performance_defaults.get("preprocess_size", {}) or {}
+default_sample_rate = int(performance_defaults.get("sample_rate", 1) or 1)
+default_longest_edge = int(preprocess_defaults.get("longest_edge_px", 0) or 0)
+default_parallel = bool(performance_defaults.get("parallel", False))
+default_max_workers = int(performance_defaults.get("max_workers", 0) or 0)
+
+st.sidebar.markdown("### Performance tuning")
+sample_rate_sidebar = st.sidebar.number_input(
+    "Frame sample rate (process every Nth frame)",
+    min_value=1,
+    step=1,
+    value=default_sample_rate,
+    help="Process every Nth frame; 1 keeps all frames.",
+)
+longest_edge_sidebar = st.sidebar.number_input(
+    "Preprocess longest edge (px)",
+    min_value=0,
+    step=32,
+    value=default_longest_edge,
+    help="Resize frames before pose inference when the longest edge exceeds this value.",
+)
+parallel_enabled_sidebar = st.sidebar.toggle(
+    "Enable parallel pose extraction",
+    value=default_parallel,
+)
+if parallel_enabled_sidebar:
+    max_workers_sidebar = st.sidebar.number_input(
+        "Max workers (0 = auto)",
+        min_value=0,
+        step=1,
+        value=default_max_workers,
+    )
+else:
+    max_workers_sidebar = default_max_workers
+
+st.sidebar.markdown("**Config snapshot**")
+st.sidebar.json(
+    {
+        "fps_cap": cfg.get("fps_cap"),
+        "smoothing_alpha": cfg.get("smoothing_alpha"),
+        "performance": {
+            "sample_rate": int(sample_rate_sidebar),
+            "preprocess_longest_edge_px": int(longest_edge_sidebar),
+            "parallel": bool(parallel_enabled_sidebar),
+            "max_workers": int(max_workers_sidebar),
+        },
+    }
+)
 
 uploaded = st.file_uploader("Upload a short squat video (.mp4/.mov)", type=["mp4", "mov"])  # noqa: E501
 analyze = st.button("Analyze", type="primary", disabled=uploaded is None)
@@ -351,26 +408,36 @@ tabs = st.tabs(["Overview", "Per-Rep", "Visuals", "Export"])  # placeholders
 if analyze and uploaded is not None:
     st.session_state["video_bytes"] = uploaded.getvalue()
     uploaded.seek(0)
+    session_cfg = copy.deepcopy(cfg)
+    performance_cfg = session_cfg.setdefault("performance", {})
+    preprocess_cfg = performance_cfg.setdefault("preprocess_size", {})
+    performance_cfg["sample_rate"] = int(sample_rate_sidebar)
+    preprocess_cfg["longest_edge_px"] = int(longest_edge_sidebar)
+    performance_cfg["max_workers"] = int(max_workers_sidebar)
+    performance_cfg["parallel"] = bool(parallel_enabled_sidebar)
     with st.spinner("Extracting 3D pose landmarks…"):
         try:
-            series_raw = extract(uploaded, cfg)
-            series_interp = preprocess.interpolate(series_raw, cfg)
-            series_smooth = preprocess.smooth(series_interp, cfg)
-            rep_windows = segment.segment(series_smooth, cfg)
+            if parallel_enabled_sidebar:
+                series_raw = extract_parallel(uploaded, session_cfg)
+            else:
+                series_raw = extract(uploaded, session_cfg)
+            series_interp = preprocess.interpolate(series_raw, session_cfg)
+            series_smooth = preprocess.smooth(series_interp, session_cfg)
+            rep_windows = segment.segment(series_smooth, session_cfg)
             tuned_params: Dict[str, float] = {}
             if auto_tune_enabled and len(rep_windows) == 0:
-                rep_windows, tuned_params = segment.auto_tune(series_smooth, cfg)
+                rep_windows, tuned_params = segment.auto_tune(series_smooth, session_cfg)
             if tuned_params:
-                seg_cfg_diag = dict(cfg.get("segmentation", {}))
+                seg_cfg_diag = dict(session_cfg.get("segmentation", {}))
                 seg_cfg_diag.update(tuned_params)
-                cfg_for_diag: Dict[str, Any] = dict(cfg)
+                cfg_for_diag: Dict[str, Any] = dict(session_cfg)
                 cfg_for_diag["segmentation"] = seg_cfg_diag
             else:
-                cfg_for_diag = cfg
+                cfg_for_diag = session_cfg
             diagnostics = segment.diagnose(series_smooth, cfg_for_diag)
-            series_clean = preprocess.normalize(series_smooth, cfg)
+            series_clean = preprocess.normalize(series_smooth, session_cfg)
             frame_metrics = kpi.frame_metrics(series_smooth, view)
-            rep_metrics = kpi.compute(series_smooth, rep_windows, cfg, view)
+            rep_metrics = kpi.compute(series_smooth, rep_windows, session_cfg, view)
         except FileNotFoundError as exc:
             st.error(f"Model missing: {exc}")
             logger.exception("Pose extraction failed: model missing")
@@ -385,6 +452,7 @@ if analyze and uploaded is not None:
             st.session_state["frame_metrics"] = frame_metrics
             st.session_state["rep_metrics"] = rep_metrics
             st.session_state["view"] = view
+            st.session_state["run_cfg"] = session_cfg
             st.session_state["seg_tuned_params"] = tuned_params
             st.session_state["seg_diagnostics"] = diagnostics
             st.session_state.pop("overlay_preview_bytes", None)
@@ -392,15 +460,21 @@ if analyze and uploaded is not None:
             st.session_state.pop("overlay_preview_name", None)
             st.session_state.pop("overlay_preview_video_hash", None)
             st.session_state.pop("video_shape", None)
-            _cache_video_shape(cfg)
-            _ensure_overlay_preview(cfg)
+            _cache_video_shape(session_cfg)
+            _ensure_overlay_preview(session_cfg)
 
 with tabs[0]:
     if "series_raw" in st.session_state:
         series_raw = st.session_state["series_raw"]
         frames_processed = len(series_raw.get("frames", []))
         st.success(f"Frames processed: {frames_processed}")
-        st.caption(f"Effective FPS: {series_raw.get('fps', 0.0):.1f}")
+        effective_fps_display = float(series_raw.get("fps", 0.0) or 0.0)
+        orig_fps_display = float(series_raw.get("orig_fps", effective_fps_display) or 0.0)
+        sample_rate_display = int(series_raw.get("sample_rate", 1) or 1)
+        st.caption(
+            f"Original FPS: {orig_fps_display:.1f} | Effective FPS: {effective_fps_display:.1f}"
+        )
+        st.caption(f"Frame sample rate: {sample_rate_display}")
         if "series_clean" in st.session_state:
             series_clean = st.session_state["series_clean"]
             st.caption(f"Cleaned frames: {len(series_clean.get('frames', []))}")
@@ -468,13 +542,14 @@ with tabs[2]:
     video_shape = st.session_state.get("video_shape")
     frame_metrics_state = st.session_state.get("frame_metrics")
     analyzed_view = st.session_state.get("view") or view
+    run_cfg = st.session_state.get("run_cfg") or cfg
 
     if series_for_overlay and not video_shape:
-        _cache_video_shape(cfg)
+        _cache_video_shape(run_cfg)
         video_shape = st.session_state.get("video_shape")
 
     if series_for_overlay and (not overlay_bytes or not overlay_mime):
-        _ensure_overlay_preview(cfg)
+        _ensure_overlay_preview(run_cfg)
         overlay_bytes = st.session_state.get("overlay_preview_bytes")
         overlay_mime = st.session_state.get("overlay_preview_mime")
         overlay_name = st.session_state.get("overlay_preview_name") or overlay_name
@@ -521,4 +596,66 @@ with tabs[2]:
                 )
 
 with tabs[3]:
-    st.write("Export options will appear once the full pipeline is available.")
+    series_raw_state = st.session_state.get("series_raw")
+    rep_metrics_state = st.session_state.get("rep_metrics") or []
+    view_state = st.session_state.get("view") or view
+    run_cfg_state = st.session_state.get("run_cfg") or cfg
+
+    if not series_raw_state:
+        st.info("Run an analysis to enable exports.")
+    else:
+        performance_state = run_cfg_state.get("performance", {}) or {}
+        preprocess_state = performance_state.get("preprocess_size", {}) or {}
+        preprocess_series = series_raw_state.get("preprocess_size", {}) or {}
+        longest_edge_value = preprocess_series.get(
+            "longest_edge_px",
+            preprocess_state.get("longest_edge_px", 0),
+        )
+        sample_rate_value = series_raw_state.get(
+            "sample_rate", performance_state.get("sample_rate", 1)
+        )
+        timestamp_utc = datetime.now(timezone.utc)
+        timestamp_str = timestamp_utc.strftime("%Y%m%dT%H%M%SZ")
+        metadata = {
+            "analysis_timestamp_utc": timestamp_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "view": str(view_state),
+            "frames_processed": int(len(series_raw_state.get("frames", []))),
+            "orig_fps": float(series_raw_state.get("orig_fps", 0.0) or 0.0),
+            "fps": float(series_raw_state.get("fps", 0.0) or 0.0),
+            "sample_rate": int(sample_rate_value or 1),
+            "preprocess_longest_edge_px": int(longest_edge_value or 0),
+            "parallel_enabled": bool(performance_state.get("parallel", False)),
+            "parallel_max_workers": int(performance_state.get("max_workers", 0) or 0),
+        }
+
+        rep_df = pd.DataFrame(rep_metrics_state)
+        if rep_df.empty:
+            rep_df = pd.DataFrame([{**metadata}])
+        else:
+            rep_df = rep_df.copy()
+            for key, value in metadata.items():
+                rep_df[key] = value
+
+        csv_bytes = rep_df.to_csv(index=False).encode("utf-8")
+        json_payload = json.dumps(
+            {
+                "metadata": metadata,
+                "rep_metrics": rep_metrics_state,
+            },
+            indent=2,
+        ).encode("utf-8")
+
+        st.markdown("#### Export metadata")
+        st.json(metadata)
+        st.download_button(
+            "Download CSV",
+            data=csv_bytes,
+            file_name=f"results_{timestamp_str}.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            "Download JSON",
+            data=json_payload,
+            file_name=f"results_{timestamp_str}.json",
+            mime="application/json",
+        )
