@@ -166,6 +166,15 @@ def _frame_metrics_frontal(series: PoseTimeSeries) -> FrameMetrics:
     left_hip = arrays.get("LEFT_HIP", np.empty((0, 3)))
     right_hip = arrays.get("RIGHT_HIP", np.empty((0, 3)))
 
+    left_thigh = left_hip - left_knee
+    left_shank = left_ankle - left_knee
+    right_thigh = right_hip - right_knee
+    right_shank = right_ankle - right_knee
+
+    left_knee_angle = _angle_deg(left_thigh, left_shank)
+    right_knee_angle = _angle_deg(right_thigh, right_shank)
+    knee_angle = _nanmean_pair(left_knee_angle, right_knee_angle)
+
     lateral_axis = 0  # X-axis captures medial-lateral deviation.
     left_offset = left_knee[:, lateral_axis] - left_ankle[:, lateral_axis]
     right_offset = right_knee[:, lateral_axis] - right_ankle[:, lateral_axis]
@@ -178,6 +187,9 @@ def _frame_metrics_frontal(series: PoseTimeSeries) -> FrameMetrics:
 
     return FrameMetrics(
         {
+            "knee_angle_deg_left": left_knee_angle,
+            "knee_angle_deg_right": right_knee_angle,
+            "knee_angle_deg": knee_angle,
             "valgus_offset_left": normalized_left,
             "valgus_offset_right": normalized_right,
             "valgus_symmetry": symmetry,

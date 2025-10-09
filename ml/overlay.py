@@ -107,31 +107,6 @@ def _draw_overlay(
         cv2.circle(frame, (point.x, point.y), radius, color, -1, lineType=cv2.LINE_AA)
 
 
-def _detect_rotation_degrees(video_path: Path) -> int:
-    """Return the clockwise rotation (in degrees) required for proper display."""
-
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        return 0
-
-    try:
-        orientation_prop = getattr(cv2, "CAP_PROP_ORIENTATION_META", None)
-        if orientation_prop is None:
-            return 0
-
-        value = capture.get(orientation_prop)
-        if not np.isfinite(value):
-            return 0
-
-        rotation = int(round(float(value))) % 360
-        if rotation in (90, 180, 270):
-            return rotation
-    finally:
-        capture.release()
-
-    return 0
-
-
 def _rotate_points(
     points: Dict[str, _Point],
     width: int,
@@ -192,7 +167,24 @@ def render_overlay(
 
     keep_original = isinstance(video_input, (str, Path))
     video_path, _ = pose3d._ensure_path(video_input, keep_temp=True)
-    rotation = _detect_rotation_degrees(Path(video_path))
+
+    rotation = 0
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if capture.isOpened():
+            orientation_prop = getattr(cv2, "CAP_PROP_ORIENTATION_META", None)
+            if orientation_prop is not None:
+                try:
+                    rotation = int(capture.get(orientation_prop) or 0)
+                except Exception:  # noqa: BLE001
+                    rotation = 0
+    finally:
+        capture.release()
+
+    rotation = int(rotation) % 360 if rotation else 0
+    if rotation not in (90, 180, 270):
+        rotation = 0
+
     rotation_code = {
         90: cv2.ROTATE_90_CLOCKWISE,
         180: cv2.ROTATE_180,

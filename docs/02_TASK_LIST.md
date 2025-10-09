@@ -269,4 +269,5 @@ Examples:
 [2025-10-09] T04.DBG+T04.TUNE — [DONE] — Segmentation diagnostics + auto-tune wired to UI
 [2025-10-09] T04.FIX — [DONE] — Scale-aware minima segmentation; stable rep count
 [2025-10-09] T09.2 — [DONE] — Overlay preview renders MP4 with pose skeleton in Visuals tab
+[2025-10-09] T09.VIS — [DONE] — Visuals tab auto overlay, view-aware charts, orientation fix
 <!-- === END: AGENT-EDITABLE TASK COMPLETION LEDGER === -->
