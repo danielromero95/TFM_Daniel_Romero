@@ -113,6 +113,18 @@ def _smooth_signal(signal: np.ndarray, window_size: int) -> np.ndarray:
     return np.convolve(signal, kernel, mode="same")
 
 
+def _estimate_scale_range(signal: np.ndarray) -> float:
+    if signal.size == 0:
+        return 0.0
+    finite_mask = np.isfinite(signal)
+    if not np.any(finite_mask):
+        return 0.0
+    finite_vals = signal[finite_mask]
+    p95 = float(np.percentile(finite_vals, 95))
+    p5 = float(np.percentile(finite_vals, 5))
+    return float(p95 - p5)
+
+
 def _local_extrema_indices(smooth: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     if smooth.size < 3:
         return np.array([], dtype=int), np.array([], dtype=int)
@@ -136,6 +148,8 @@ def _select_minima(
 ) -> Tuple[np.ndarray, np.ndarray]:
     hip_min_drop_norm = float(params.get("hip_min_drop_norm", 0.08))
     peak_prominence = float(params.get("peak_prominence", 0.03))
+    abs_drop = float(params.get("abs_drop", hip_min_drop_norm))
+    abs_prom = float(params.get("abs_prom", peak_prominence))
     min_rep_duration_s = float(params.get("min_rep_duration_s", 0.8))
     min_samples = max(1, int(round(min_rep_duration_s * fps)))
 
@@ -173,11 +187,11 @@ def _select_minima(
 
         peak_idx = int(preceding_peaks[-1])
         drop = float(smooth[peak_idx] - smooth[min_idx])
-        if drop < hip_min_drop_norm:
+        if drop < abs_drop:
             continue
 
         prominence = peak_prominences.get(peak_idx, drop)
-        if prominence < peak_prominence:
+        if prominence < abs_prom:
             continue
 
         accepted_mins.append(int(min_idx))
@@ -197,20 +211,55 @@ def _detect_reps(
     window_size = _moving_average_window(fps, length)
     smooth = _smooth_signal(signal, window_size)
     peaks_idx, mins_idx_candidates = _local_extrema_indices(smooth)
-    selected_peaks, selected_mins = _select_minima(
-        smooth, peaks_idx, mins_idx_candidates, fps, params
-    )
+
+    hip_min_drop_norm = float(params.get("hip_min_drop_norm", 0.08))
+    peak_prominence = float(params.get("peak_prominence", 0.03))
+    min_rep_duration_s = float(params.get("min_rep_duration_s", 0.8))
+
+    scale_range = _estimate_scale_range(smooth)
+    if scale_range <= 0.0:
+        fallback_scale = float(np.nanstd(smooth))
+        if fallback_scale > 0.0:
+            scale_range = fallback_scale
+
+    def _to_absolute(value: float, reference: float) -> float:
+        if 0.0 < value <= 1.0:
+            if reference > 0.0:
+                return float(value * reference)
+            return 0.0
+        return float(value)
+
+    abs_drop = _to_absolute(hip_min_drop_norm, scale_range)
+    abs_prom = _to_absolute(peak_prominence, scale_range)
+
+    selected_peaks: np.ndarray
+    selected_mins: np.ndarray
+    if scale_range > 0.0:
+        selection_params = dict(params)
+        selection_params["abs_drop"] = abs_drop
+        selection_params["abs_prom"] = abs_prom
+        selection_params["min_rep_duration_s"] = min_rep_duration_s
+        selected_peaks, selected_mins = _select_minima(
+            smooth, peaks_idx, mins_idx_candidates, fps, selection_params
+        )
+    else:
+        selected_peaks = np.array([], dtype=int)
+        selected_mins = np.array([], dtype=int)
+
     return {
         "smooth": smooth,
         "peaks_idx": selected_peaks,
         "mins_idx": selected_mins,
         "window_size": int(window_size),
         "params": {
-            "hip_min_drop_norm": float(params.get("hip_min_drop_norm", 0.08)),
-            "peak_prominence": float(params.get("peak_prominence", 0.03)),
-            "min_rep_duration_s": float(params.get("min_rep_duration_s", 0.8)),
+            "hip_min_drop_norm": hip_min_drop_norm,
+            "peak_prominence": peak_prominence,
+            "min_rep_duration_s": min_rep_duration_s,
             "window_size": int(window_size),
         },
+        "scale_range": float(scale_range),
+        "abs_drop_used": float(abs_drop),
+        "abs_prom_used": float(abs_prom),
     }
 
 
@@ -234,6 +283,9 @@ def _segment_full(
                 "min_rep_duration_s": float((params or {}).get("min_rep_duration_s", 0.8)),
                 "window_size": 1,
             },
+            "scale_range": 0.0,
+            "abs_drop_used": 0.0,
+            "abs_prom_used": 0.0,
         }
         detection["rep_windows"] = []
         detection["fps"] = fps
@@ -270,6 +322,9 @@ def diagnose(series_pre_norm: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, 
         "peaks_idx": result.get("peaks_idx", np.array([], dtype=int)),
         "mins_idx": result.get("mins_idx", np.array([], dtype=int)),
         "params": result.get("params", {}),
+        "scale_range": float(result.get("scale_range", 0.0) or 0.0),
+        "abs_drop_used": float(result.get("abs_drop_used", 0.0) or 0.0),
+        "abs_prom_used": float(result.get("abs_prom_used", 0.0) or 0.0),
     }
     return diagnostics
 
@@ -286,13 +341,41 @@ def auto_tune(
         return rep_windows, {}
 
     tuned_params: Dict[str, float] = {}
-    floors = {"hip_min_drop_norm": 0.03, "peak_prominence": 0.01}
+    scale_range = float(base_result.get("scale_range", 0.0) or 0.0)
+    if scale_range <= 0.0:
+        return [], {}
+
+    drop_fraction = max(float(base_params.get("hip_min_drop_norm", 0.08)), 0.0)
+    prom_fraction = max(float(base_params.get("peak_prominence", 0.03)), 0.0)
+
+    if drop_fraction > 1.0 and scale_range > 0.0:
+        drop_fraction = drop_fraction / scale_range
+    if prom_fraction > 1.0 and scale_range > 0.0:
+        prom_fraction = prom_fraction / scale_range
+
+    floors = {"hip_min_drop_norm": 0.02, "peak_prominence": 0.005}
     factors = [(0.75, 0.75), (0.5, 0.5)]
+
+    def _from_fraction(original: float, fraction: float) -> float:
+        fraction = max(fraction, 0.0)
+        if original <= 0.0:
+            return float(fraction)
+        if 0.0 < original <= 1.0:
+            return float(fraction)
+        if scale_range > 0.0:
+            return float(fraction * scale_range)
+        return float(original)
 
     for drop_factor, prom_factor in factors:
         new_params = dict(base_params)
-        new_params["hip_min_drop_norm"] = max(base_params["hip_min_drop_norm"] * drop_factor, floors["hip_min_drop_norm"])
-        new_params["peak_prominence"] = max(base_params["peak_prominence"] * prom_factor, floors["peak_prominence"])
+        candidate_drop_fraction = max(drop_fraction * drop_factor, floors["hip_min_drop_norm"])
+        candidate_prom_fraction = max(prom_fraction * prom_factor, floors["peak_prominence"])
+        new_params["hip_min_drop_norm"] = _from_fraction(
+            base_params.get("hip_min_drop_norm", 0.08), candidate_drop_fraction
+        )
+        new_params["peak_prominence"] = _from_fraction(
+            base_params.get("peak_prominence", 0.03), candidate_prom_fraction
+        )
 
         tuned_result = _segment_full(series_pre_norm, cfg, new_params)
         rep_windows = tuned_result.get("rep_windows", [])
