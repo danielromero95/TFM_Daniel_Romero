@@ -6,7 +6,6 @@ import hashlib
 import logging
 import sys
 from pathlib import Path
-from collections.abc import Iterable
 from typing import Any, Dict, Tuple
 
 import streamlit as st
@@ -142,41 +141,124 @@ def _render_overlay_player(data: bytes, mime: str, *, max_width: int = 720) -> N
     st.markdown(video_html, unsafe_allow_html=True)
 
 
-def _plot_lateral_chart(container: Any, diagnostics: Dict[str, Any]) -> None:
-    times = np.asarray(diagnostics.get("t") or [], dtype=float)
-    hip_series = diagnostics.get("smooth")
-    if hip_series is None:
-        hip_series = diagnostics.get("hip_signal")
+def _safe_get(mapping: Any, key: str) -> Any:
+    if mapping is None:
+        return None
+    getter = getattr(mapping, "get", None)
+    if callable(getter):
+        return getter(key)
+    try:
+        return mapping[key]
+    except Exception:  # noqa: BLE001
+        return None
 
-    y = np.asarray(hip_series or [], dtype=float)
+
+def _ensure_array(value: Any, *, dtype: Any) -> np.ndarray:
+    if value is None:
+        return np.array([], dtype=dtype)
+    try:
+        arr = np.asarray(value, dtype=dtype)
+    except (TypeError, ValueError):
+        return np.array([], dtype=dtype)
+    if arr.ndim == 0:
+        arr = arr.reshape(1)
+    else:
+        arr = arr.reshape(-1)
+    return arr.astype(dtype, copy=False)
+
+
+def _render_empty_chart(container: Any, *, ylabel: str, caption: str) -> None:
+    fig, ax = plt.subplots(figsize=(5, 3))
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel(ylabel)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=10, color="#666666")
+    container.pyplot(fig, clear_figure=True)
+    plt.close(fig)
+    container.caption(caption)
+
+
+def _valid_indices(index_array: np.ndarray, upper: int) -> np.ndarray:
+    if index_array.size == 0 or upper <= 0:
+        return np.array([], dtype=int)
+    idx = index_array.astype(int, copy=False)
+    mask = (idx >= 0) & (idx < upper)
+    if not np.any(mask):
+        return np.array([], dtype=int)
+    return np.unique(idx[mask])
+
+
+def _plot_lateral_chart(container: Any, diagnostics: Dict[str, Any]) -> None:
+    times = _ensure_array(_safe_get(diagnostics, "t"), dtype=float)
+    hip_series = _safe_get(diagnostics, "smooth")
+    if hip_series is None:
+        hip_series = _safe_get(diagnostics, "hip_signal")
+
+    y = _ensure_array(hip_series, dtype=float)
     n = min(times.size, y.size)
     if n == 0:
-        container.info("Hip depth chart unavailable for this clip.")
+        _render_empty_chart(
+            container,
+            ylabel="Hip depth (% of clip range)",
+            caption="Hip depth chart unavailable for this clip.",
+        )
         return
 
     times = times[:n]
     y = y[:n]
-    max_y = float(np.nanmax(y))
-    min_y = float(np.nanmin(y))
-    if not np.isfinite(max_y) or not np.isfinite(min_y) or abs(max_y - min_y) < 1e-9:
-        container.info("Hip depth chart unavailable for this clip.")
+    finite_y = y[np.isfinite(y)]
+    if finite_y.size == 0:
+        _render_empty_chart(
+            container,
+            ylabel="Hip depth (% of clip range)",
+            caption="Hip depth chart unavailable for this clip.",
+        )
         return
 
-    depth_pct = (max_y - y) / (max_y - min_y + 1e-9) * 100.0
+    max_y = float(np.nanmax(finite_y))
+    min_y = float(np.nanmin(finite_y))
+    denom = max_y - min_y
+    if not np.isfinite(max_y) or not np.isfinite(min_y) or denom <= 1e-9:
+        _render_empty_chart(
+            container,
+            ylabel="Hip depth (% of clip range)",
+            caption="Hip depth chart unavailable for this clip.",
+        )
+        return
+
+    with np.errstate(invalid="ignore"):
+        depth_pct = (max_y - y) / denom * 100.0
+
+    valid_mask = np.isfinite(times) & np.isfinite(depth_pct)
+    if not np.any(valid_mask):
+        _render_empty_chart(
+            container,
+            ylabel="Hip depth (% of clip range)",
+            caption="Hip depth chart unavailable for this clip.",
+        )
+        return
 
     fig, ax = plt.subplots(figsize=(5, 3))
-    ax.plot(times, depth_pct)
+    ax.plot(times[valid_mask], depth_pct[valid_mask])
 
-    mins_idx = diagnostics.get("mins_idx")
-    if isinstance(mins_idx, Iterable):  # type: ignore[arg-type]
-        valid_idx = [
-            int(idx)
-            for idx in mins_idx
-            if isinstance(idx, (int, np.integer)) and 0 <= int(idx) < n
-        ]
-        if valid_idx:
-            idx_array = np.asarray(valid_idx, dtype=int)
-            ax.plot(times[idx_array], depth_pct[idx_array], marker="v", linestyle="None", markersize=6)
+    mins_idx = _ensure_array(_safe_get(diagnostics, "mins_idx"), dtype=int)
+    valid_idx = _valid_indices(mins_idx, n)
+    if valid_idx.size:
+        marker_mask = valid_mask[valid_idx]
+        valid_idx = valid_idx[marker_mask]
+        if valid_idx.size:
+            ax.plot(
+                times[valid_idx],
+                depth_pct[valid_idx],
+                marker="v",
+                linestyle="None",
+                markersize=6,
+            )
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Hip depth (% of clip range)")
@@ -192,45 +274,71 @@ def _plot_frontal_chart(
     diagnostics: Dict[str, Any],
     frame_metrics_obj: Any,
 ) -> None:
-    times = np.asarray(diagnostics.get("t") or [], dtype=float)
+    times = _ensure_array(_safe_get(diagnostics, "t"), dtype=float)
 
     knee_angles = np.array([], dtype=float)
     if frame_metrics_obj is not None:
-        knee_angles = np.asarray(frame_metrics_obj.get("knee_angle_deg"), dtype=float)
-        if knee_angles.size == 0:
-            left = np.asarray(frame_metrics_obj.get("knee_angle_deg_left"), dtype=float)
-            right = np.asarray(frame_metrics_obj.get("knee_angle_deg_right"), dtype=float)
+        primary = _ensure_array(_safe_get(frame_metrics_obj, "knee_angle_deg"), dtype=float)
+        if primary.size:
+            knee_angles = primary
+        else:
+            left = _ensure_array(_safe_get(frame_metrics_obj, "knee_angle_deg_left"), dtype=float)
+            right = _ensure_array(_safe_get(frame_metrics_obj, "knee_angle_deg_right"), dtype=float)
             candidates = [arr for arr in (left, right) if arr.size]
             if len(candidates) == 2:
-                with np.errstate(invalid="ignore"):
-                    knee_angles = np.nanmean(np.stack(candidates), axis=0)
+                min_len = min(arr.size for arr in candidates)
+                if min_len > 0:
+                    with np.errstate(invalid="ignore"):
+                        stacked = np.stack([arr[:min_len] for arr in candidates], axis=0)
+                        knee_angles = np.nanmean(stacked, axis=0)
             elif candidates:
                 knee_angles = candidates[0]
 
     n = min(times.size, knee_angles.size)
     if n == 0:
-        container.info("Knee angle chart unavailable for this clip.")
+        _render_empty_chart(
+            container,
+            ylabel="Knee flexion (°)",
+            caption="Knee angle chart unavailable for this clip.",
+        )
         return
 
     times = times[:n]
     knee_angles = knee_angles[:n]
-    if not np.isfinite(knee_angles).any():
-        container.info("Knee angle chart unavailable for this clip.")
+    finite_angles = knee_angles[np.isfinite(knee_angles)]
+    if finite_angles.size == 0:
+        _render_empty_chart(
+            container,
+            ylabel="Knee flexion (°)",
+            caption="Knee angle chart unavailable for this clip.",
+        )
+        return
+
+    valid_mask = np.isfinite(times) & np.isfinite(knee_angles)
+    if not np.any(valid_mask):
+        _render_empty_chart(
+            container,
+            ylabel="Knee flexion (°)",
+            caption="Knee angle chart unavailable for this clip.",
+        )
         return
 
     fig, ax = plt.subplots(figsize=(5, 3))
-    ax.plot(times, knee_angles)
+    ax.plot(times[valid_mask], knee_angles[valid_mask])
 
-    mins_idx = diagnostics.get("mins_idx")
-    if isinstance(mins_idx, Iterable):  # type: ignore[arg-type]
-        valid_idx = [
-            int(idx)
-            for idx in mins_idx
-            if isinstance(idx, (int, np.integer)) and 0 <= int(idx) < n
-        ]
-        if valid_idx:
-            idx_array = np.asarray(valid_idx, dtype=int)
-            ax.plot(times[idx_array], knee_angles[idx_array], marker="v", linestyle="None", markersize=6)
+    mins_idx = _ensure_array(_safe_get(diagnostics, "mins_idx"), dtype=int)
+    valid_idx = _valid_indices(mins_idx, n)
+    if valid_idx.size:
+        marker_mask = valid_mask[valid_idx]
+        valid_idx = valid_idx[marker_mask]
+        if valid_idx.size:
+            ax.plot(
+                times[valid_idx],
+                knee_angles[valid_idx],
+                marker="v",
+                linestyle="None",
+                markersize=6,
+            )
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Knee flexion (°)")
